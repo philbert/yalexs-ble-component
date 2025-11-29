@@ -1,6 +1,7 @@
 {
   "domain": "yalexs_ble",
   "name": "Yale Access Bluetooth",
+  "version": "0.0.0",
   "bluetooth": [
     {
       "manufacturer_id": 465,
