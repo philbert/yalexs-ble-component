@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from yalexs_ble import ConnectionInfo, LockInfo, LockState
 
@@ -21,6 +23,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import YALEXSBLEConfigEntry
 from .entity import YALEXSBLEEntity
@@ -72,6 +75,11 @@ SENSORS: tuple[YaleXSBLESensorEntityDescription, ...] = (
 )
 
 
+def _format_datetime(value: datetime) -> str:
+    """Format datetimes for state attributes."""
+    return dt_util.as_utc(value).isoformat()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: YALEXSBLEConfigEntry,
@@ -79,7 +87,9 @@ async def async_setup_entry(
 ) -> None:
     """Set up YALE XS Bluetooth sensors."""
     data = entry.runtime_data
-    async_add_entities(YaleXSBLESensor(description, data) for description in SENSORS)
+    entities: list[SensorEntity] = [YaleXSBLEConnectionStateSensor(data)]
+    entities.extend(YaleXSBLESensor(description, data) for description in SENSORS)
+    async_add_entities(entities)
 
 
 class YaleXSBLESensor(YALEXSBLEEntity, SensorEntity):
@@ -106,3 +116,45 @@ class YaleXSBLESensor(YALEXSBLEEntity, SensorEntity):
             new_state, lock_info, connection_info
         )
         super()._async_update_state(new_state, lock_info, connection_info)
+
+
+class YaleXSBLEConnectionStateSensor(YALEXSBLEEntity, SensorEntity):
+    """Yale XS Bluetooth connection health sensor."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "connection"
+
+    def __init__(self, data: YaleXSBLEData) -> None:
+        """Initialize the sensor."""
+        self._health: Any | None = None
+        super().__init__(data)
+        self._attr_unique_id = f"{self._device.address}_connection_state"
+
+    @callback
+    def _async_update_state(
+        self, new_state: LockState, lock_info: LockInfo, connection_info: ConnectionInfo
+    ) -> None:
+        """Update the state."""
+        health = getattr(connection_info, "health", None)
+        self._health = health
+        self._attr_native_value = health.state if health else None
+        super()._async_update_state(new_state, lock_info, connection_info)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return connection health attributes."""
+        health = self._health
+        if health is None:
+            return {}
+        attrs: dict[str, Any] = {}
+        if health.last_success is not None:
+            attrs["last_success"] = _format_datetime(health.last_success)
+        if health.last_failure is not None:
+            attrs["last_failure"] = _format_datetime(health.last_failure)
+        if health.last_presence_seen is not None:
+            attrs["last_presence_seen"] = _format_datetime(health.last_presence_seen)
+        if health.consecutive_failures is not None:
+            attrs["consecutive_failures"] = health.consecutive_failures
+        if health.last_error is not None:
+            attrs["last_error"] = health.last_error
+        return attrs

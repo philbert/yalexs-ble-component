@@ -50,6 +50,9 @@
     "sensor": {
       "battery_voltage": {
         "name": "Battery voltage"
+      },
+      "connection": {
+        "name": "Connection"
       }
     }
   },
