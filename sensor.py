@@ -122,7 +122,7 @@ class YaleXSBLEConnectionStateSensor(YALEXSBLEEntity, SensorEntity):
     """Yale XS Bluetooth connection health sensor."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_translation_key = "connection"
+    _attr_name = "Connection state"
 
     def __init__(self, data: YaleXSBLEData) -> None:
         """Initialize the sensor."""
