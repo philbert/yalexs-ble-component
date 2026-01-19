@@ -51,6 +51,9 @@
       "battery_voltage": {
         "name": "Battery voltage"
       },
+      "operation": {
+        "name": "Operation"
+      },
       "connection": {
         "name": "Connection"
       }
