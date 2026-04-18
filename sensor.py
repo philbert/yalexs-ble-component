@@ -118,6 +118,7 @@ class YaleXSBLEOperationSensor(YALEXSBLEEntity, SensorEntity):
     """Representation of an YaleXSBLE lock operation sensor."""
 
     _attr_translation_key = "operation"
+    _attr_name = "activity"
     _attr_icon = "mdi:lock-clock"
     _pending_activity_update: DoorActivity | LockActivity | None = None
     _cancel_pending_activity_update: CALLBACK_TYPE | None = None
