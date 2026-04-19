@@ -35,7 +35,7 @@ from homeassistant.core import (
     State,
     callback,
 )
-from homeassistant.helpers import event as evt
+from homeassistant.helpers import entity_registry as er, event as evt
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -45,6 +45,7 @@ from .const import (
     ATTR_SLOT,
     ATTR_SOURCE,
     ATTR_TIMESTAMP,
+    DOMAIN,
     OPERATION_SENSOR_WRITE_DELAY,
 )
 from .entity import YALEXSBLEEntity
@@ -118,7 +119,20 @@ async def async_setup_entry(
 ) -> None:
     """Set up YALE XS Bluetooth sensors."""
     data = entry.runtime_data
-    entities: list[SensorEntity] = [YaleXSBLEConnectionStateSensor(data)]
+    entities: list[SensorEntity] = []
+    connection_state_unique_id = f"{data.lock.address}_connection_state"
+    if data.always_connected:
+        entities.append(YaleXSBLEConnectionStateSensor(data))
+    else:
+        # Clean up a stale connection state entity from the registry if the
+        # user turned always_connected off after having it enabled.
+        registry = er.async_get(hass)
+        if (
+            existing := registry.async_get_entity_id(
+                "sensor", DOMAIN, connection_state_unique_id
+            )
+        ) is not None:
+            registry.async_remove(existing)
     entities.extend(YaleXSBLESensor(description, data) for description in SENSORS)
     entities.append(YaleXSBLEOperationSensor(data))
     async_add_entities(entities)
