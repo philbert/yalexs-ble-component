@@ -156,11 +156,15 @@ async def async_setup_entry(
 def _migrate_battery_voltage_unit(
     registry: er.EntityRegistry, address: str
 ) -> None:
-    """Drop a stale 'V' user-override unit from earlier versions of the battery voltage sensor.
+    """Drop stale 'V' unit overrides from earlier versions of the battery voltage sensor.
 
-    The sensor used to report volts; it now reports millivolts. HA picks up
-    the new native unit from the entity description on its own, so we only
-    need to clear any lingering user override stored in the registry.
+    The sensor used to report volts; it now reports millivolts. HA preserves
+    the previously-displayed unit in two places: an explicit user override at
+    options["sensor"]["unit_of_measurement"], and an auto-set
+    options["sensor.private"]["suggested_unit_of_measurement"] that gets
+    written when the integration changes native_unit_of_measurement on a
+    convertible device class. Both must be cleared so the new mV native unit
+    is what actually gets displayed.
     """
     entity_id = registry.async_get_entity_id(
         "sensor", DOMAIN, f"{address}battery_voltage"
@@ -174,6 +178,16 @@ def _migrate_battery_voltage_unit(
     if sensor_options.get("unit_of_measurement") == "V":
         new_options = {k: v for k, v in sensor_options.items() if k != "unit_of_measurement"}
         registry.async_update_entity_options(entity_id, "sensor", new_options or None)
+    private_options = entry.options.get("sensor.private", {})
+    if private_options.get("suggested_unit_of_measurement") == "V":
+        new_private = {
+            k: v
+            for k, v in private_options.items()
+            if k != "suggested_unit_of_measurement"
+        }
+        registry.async_update_entity_options(
+            entity_id, "sensor.private", new_private or None
+        )
 
 
 class YaleXSBLEOperationSensor(YALEXSBLEEntity, RestoreSensor):
