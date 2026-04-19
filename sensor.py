@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 import logging
 
@@ -12,6 +12,7 @@ from yalexs_ble import ConnectionInfo, DoorActivity, LockActivity, LockInfo, Loc
 
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -22,6 +23,7 @@ from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     EntityCategory,
     UnitOfElectricPotential,
 )
@@ -50,11 +52,19 @@ from .models import YaleXSBLEData
 
 _LOGGER = logging.getLogger(__name__)
 
+# Restore the last known value for sensors that are populated from drained
+# lock log entries (battery, activity). The lock does not re-send these on
+# demand, so "unknown" after restart is worse than showing the prior value.
+# Cap the age so we don't show indefinitely stale data.
+RESTORE_MAX_AGE = timedelta(days=14)
+
+
 @dataclass(frozen=True, kw_only=True)
 class YaleXSBLESensorEntityDescription(SensorEntityDescription):
     """Describes Yale Access Bluetooth sensor entity."""
 
     value_fn: Callable[[LockState, LockInfo, ConnectionInfo], int | float | None]
+    restore: bool = False
 
 
 SENSORS: tuple[YaleXSBLESensorEntityDescription, ...] = (
@@ -75,6 +85,7 @@ SENSORS: tuple[YaleXSBLESensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         has_entity_name=True,
         native_unit_of_measurement=PERCENTAGE,
+        restore=True,
         value_fn=lambda state, info, connection: state.battery.percentage
         if state.battery
         else None,
@@ -113,8 +124,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-# RestoreSensor
-class YaleXSBLEOperationSensor(YALEXSBLEEntity, SensorEntity):
+class YaleXSBLEOperationSensor(YALEXSBLEEntity, RestoreSensor):
     """Representation of an YaleXSBLE lock operation sensor."""
 
     _attr_translation_key = "operation"
@@ -231,13 +241,28 @@ class YaleXSBLEOperationSensor(YALEXSBLEEntity, SensorEntity):
         """Register callbacks & perform initial updates."""
         await super().async_added_to_hass()
 
+        last_state = await self.async_get_last_state()
+        if (
+            last_state is not None
+            and last_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+            and dt_util.utcnow() - last_state.last_updated <= RESTORE_MAX_AGE
+        ):
+            self._attr_native_value = last_state.state
+            restored_attrs = {
+                key: last_state.attributes[key]
+                for key in (ATTR_TIMESTAMP, ATTR_SOURCE, ATTR_REMOTE_TYPE, ATTR_SLOT)
+                if key in last_state.attributes
+            }
+            if restored_attrs:
+                self._attr_extra_state_attributes = restored_attrs
+
         self.async_on_remove(
             self._device.register_activity_callback(
                 self._async_activity_update, request_update=True
             )
         )
 
-class YaleXSBLESensor(YALEXSBLEEntity, SensorEntity):
+class YaleXSBLESensor(YALEXSBLEEntity, RestoreSensor):
     """Yale XS Bluetooth sensor."""
 
     entity_description: YaleXSBLESensorEntityDescription
@@ -257,10 +282,36 @@ class YaleXSBLESensor(YALEXSBLEEntity, SensorEntity):
         self, new_state: LockState, lock_info: LockInfo, connection_info: ConnectionInfo
     ) -> None:
         """Update the state."""
-        self._attr_native_value = self.entity_description.value_fn(
+        value = self.entity_description.value_fn(
             new_state, lock_info, connection_info
         )
+        # For restore-enabled sensors (battery), the lock only re-reports
+        # values via drained log entries. Don't clobber a known value with
+        # None just because the latest state read had no battery field.
+        if not (
+            value is None
+            and self.entity_description.restore
+            and self._attr_native_value is not None
+        ):
+            self._attr_native_value = value
         super()._async_update_state(new_state, lock_info, connection_info)
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks & restore last value if applicable."""
+        await super().async_added_to_hass()
+        if not self.entity_description.restore:
+            return
+        last_sensor_data = await self.async_get_last_sensor_data()
+        if last_sensor_data is None or last_sensor_data.native_value is None:
+            return
+        last_state = await self.async_get_last_state()
+        if (
+            last_state is None
+            or dt_util.utcnow() - last_state.last_updated > RESTORE_MAX_AGE
+        ):
+            return
+        if self._attr_native_value is None:
+            self._attr_native_value = last_sensor_data.native_value
 
 
 class YaleXSBLEConnectionStateSensor(YALEXSBLEEntity, SensorEntity):
