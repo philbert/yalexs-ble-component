@@ -156,11 +156,11 @@ async def async_setup_entry(
 def _migrate_battery_voltage_unit(
     registry: er.EntityRegistry, address: str
 ) -> None:
-    """Drop a stale 'V' unit from earlier versions of the battery voltage sensor.
+    """Drop a stale 'V' user-override unit from earlier versions of the battery voltage sensor.
 
     The sensor used to report volts; it now reports millivolts. HA picks up
-    the new native unit on its own, but we also clear any lingering user
-    override and the cached original unit so the UI doesn't keep showing V.
+    the new native unit from the entity description on its own, so we only
+    need to clear any lingering user override stored in the registry.
     """
     entity_id = registry.async_get_entity_id(
         "sensor", DOMAIN, f"{address}battery_voltage"
@@ -174,8 +174,6 @@ def _migrate_battery_voltage_unit(
     if sensor_options.get("unit_of_measurement") == "V":
         new_options = {k: v for k, v in sensor_options.items() if k != "unit_of_measurement"}
         registry.async_update_entity_options(entity_id, "sensor", new_options or None)
-    if entry.original_unit_of_measurement == "V":
-        registry.async_update_entity(entity_id, original_unit_of_measurement="mV")
 
 
 class YaleXSBLEOperationSensor(YALEXSBLEEntity, RestoreSensor):
