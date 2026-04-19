@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from yalexs_ble import (
     AuthError,
+    BatterySource,
     ConnectionInfo,
     LockInfo,
     LockState,
@@ -22,6 +23,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from .config_cache import async_get_validated_config
 from .const import (
     CONF_ALWAYS_CONNECTED,
+    CONF_BATTERY_RETRIEVAL_METHOD,
     CONF_KEY,
     CONF_LOCAL_NAME,
     CONF_SLOT,
@@ -48,8 +50,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: YALEXSBLEConfigEntry) ->
     slot = entry.data[CONF_SLOT]
     has_unique_local_name = local_name_is_unique(local_name)
     always_connected = entry.options.get(CONF_ALWAYS_CONNECTED, False)
+    stored_method = entry.data.get(CONF_BATTERY_RETRIEVAL_METHOD)
+    battery_retrieval_method: BatterySource | None = None
+    if stored_method is not None:
+        try:
+            battery_retrieval_method = BatterySource(stored_method)
+        except ValueError:
+            battery_retrieval_method = None
     push_lock = PushLock(
-        local_name, address, None, key, slot, always_connected=always_connected
+        local_name,
+        address,
+        None,
+        key,
+        slot,
+        always_connected=always_connected,
+        battery_retrieval_method=battery_retrieval_method,
     )
     id_ = local_name if has_unique_local_name else address
     push_lock.set_name(f"{entry.title} ({id_})")
@@ -144,6 +159,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: YALEXSBLEConfigEntry) ->
         """Handle state changed."""
         if new_state.auth and not new_state.auth.successful:
             entry.async_start_reauth(hass)
+        method = push_lock.battery_retrieval_method
+        stored = entry.data.get(CONF_BATTERY_RETRIEVAL_METHOD)
+        new_stored = method.value if method is not None else None
+        if new_stored != stored:
+            hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_BATTERY_RETRIEVAL_METHOD: new_stored},
+            )
 
     entry.async_on_unload(push_lock.register_callback(_async_state_changed))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

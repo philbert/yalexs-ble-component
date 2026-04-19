@@ -369,7 +369,7 @@ class YaleXSBLESensor(YALEXSBLEEntity, RestoreSensor):
         ):
             return
         if self.entity_description.restore_requires_log_source and (
-            last_state.attributes.get(ATTR_SOURCE) != BatterySource.LOG.value
+            self._device.battery_retrieval_method != BatterySource.LOG
         ):
             return
         if self._attr_native_value is None:
