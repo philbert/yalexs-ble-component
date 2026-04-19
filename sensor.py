@@ -8,7 +8,14 @@ from datetime import datetime, timedelta
 from typing import Any
 import logging
 
-from yalexs_ble import ConnectionInfo, DoorActivity, LockActivity, LockInfo, LockState
+from yalexs_ble import (
+    BatterySource,
+    ConnectionInfo,
+    DoorActivity,
+    LockActivity,
+    LockInfo,
+    LockState,
+)
 
 from homeassistant.components.recorder import get_instance as get_recorder_instance
 from homeassistant.components.sensor import (
@@ -66,6 +73,11 @@ class YaleXSBLESensorEntityDescription(SensorEntityDescription):
 
     value_fn: Callable[[LockState, LockInfo, ConnectionInfo], int | float | None]
     restore: bool = False
+    # When True, only restore a previous value if the stored reading came
+    # from LOCK_ACTIVITY (i.e. source=LOG). Live GATT readings are fetched
+    # again quickly after startup, so restoring stale GATT values just masks
+    # the fact that we haven't re-read yet.
+    restore_requires_log_source: bool = False
 
 
 SENSORS: tuple[YaleXSBLESensorEntityDescription, ...] = (
@@ -98,9 +110,11 @@ SENSORS: tuple[YaleXSBLESensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         has_entity_name=True,
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        native_unit_of_measurement=UnitOfElectricPotential.MILLIVOLT,
         entity_registry_enabled_default=False,
-        value_fn=lambda state, info, connection: state.battery.voltage
+        restore=True,
+        restore_requires_log_source=True,
+        value_fn=lambda state, info, connection: round(state.battery.voltage * 1000)
         if state.battery
         else None,
     ),
@@ -119,6 +133,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up YALE XS Bluetooth sensors."""
     data = entry.runtime_data
+    registry = er.async_get(hass)
     entities: list[SensorEntity] = []
     connection_state_unique_id = f"{data.lock.address}_connection_state"
     if data.always_connected:
@@ -126,16 +141,41 @@ async def async_setup_entry(
     else:
         # Clean up a stale connection state entity from the registry if the
         # user turned always_connected off after having it enabled.
-        registry = er.async_get(hass)
         if (
             existing := registry.async_get_entity_id(
                 "sensor", DOMAIN, connection_state_unique_id
             )
         ) is not None:
             registry.async_remove(existing)
+    _migrate_battery_voltage_unit(registry, data.lock.address)
     entities.extend(YaleXSBLESensor(description, data) for description in SENSORS)
     entities.append(YaleXSBLEOperationSensor(data))
     async_add_entities(entities)
+
+
+def _migrate_battery_voltage_unit(
+    registry: er.EntityRegistry, address: str
+) -> None:
+    """Drop a stale 'V' unit from earlier versions of the battery voltage sensor.
+
+    The sensor used to report volts; it now reports millivolts. HA picks up
+    the new native unit on its own, but we also clear any lingering user
+    override and the cached original unit so the UI doesn't keep showing V.
+    """
+    entity_id = registry.async_get_entity_id(
+        "sensor", DOMAIN, f"{address}battery_voltage"
+    )
+    if entity_id is None:
+        return
+    entry = registry.async_get(entity_id)
+    if entry is None:
+        return
+    sensor_options = entry.options.get("sensor", {})
+    if sensor_options.get("unit_of_measurement") == "V":
+        new_options = {k: v for k, v in sensor_options.items() if k != "unit_of_measurement"}
+        registry.async_update_entity_options(entity_id, "sensor", new_options or None)
+    if entry.original_unit_of_measurement == "V":
+        registry.async_update_entity(entity_id, original_unit_of_measurement="mV")
 
 
 class YaleXSBLEOperationSensor(YALEXSBLEEntity, RestoreSensor):
@@ -308,6 +348,10 @@ class YaleXSBLESensor(YALEXSBLEEntity, RestoreSensor):
             and self._attr_native_value is not None
         ):
             self._attr_native_value = value
+        if new_state.battery is not None:
+            self._attr_extra_state_attributes = {
+                ATTR_SOURCE: new_state.battery.source.value,
+            }
         super()._async_update_state(new_state, lock_info, connection_info)
 
     async def async_added_to_hass(self) -> None:
@@ -324,8 +368,14 @@ class YaleXSBLESensor(YALEXSBLEEntity, RestoreSensor):
             or dt_util.utcnow() - last_state.last_updated > RESTORE_MAX_AGE
         ):
             return
+        if self.entity_description.restore_requires_log_source and (
+            last_state.attributes.get(ATTR_SOURCE) != BatterySource.LOG.value
+        ):
+            return
         if self._attr_native_value is None:
             self._attr_native_value = last_sensor_data.native_value
+            if (source := last_state.attributes.get(ATTR_SOURCE)) is not None:
+                self._attr_extra_state_attributes = {ATTR_SOURCE: source}
 
 
 class YaleXSBLEConnectionStateSensor(YALEXSBLEEntity, SensorEntity):
